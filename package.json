@@ -1,0 +1,9 @@
+{
+  "name": "family-dashboard-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "node-ical": "^0.20.1"
+  }
+}
