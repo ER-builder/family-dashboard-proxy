@@ -44,6 +44,31 @@ export default async function handler(req, res) {
     }
 
     events.sort((a, b) => new Date(a.start) - new Date(b.start));
+
+    if (req.query.debug === "1") {
+      const veventKeys = Object.keys(data).filter(k => data[k].type === "VEVENT");
+      const samples = veventKeys.slice(0, 5).map(k => {
+        const e = data[k];
+        return {
+          summary: e.summary,
+          start: e.start ? new Date(e.start).toISOString() : null,
+          end: e.end ? new Date(e.end).toISOString() : null,
+          hasRrule: !!e.rrule,
+          datetype: e.datetype
+        };
+      });
+      return res.status(200).json({
+        events,
+        diagnostics: {
+          totalKeys: Object.keys(data).length,
+          veventCount: veventKeys.length,
+          horizonIso: horizon.toISOString(),
+          nowIso: now.toISOString(),
+          firstFiveSamples: samples
+        }
+      });
+    }
+
     return res.status(200).json({ events: events.slice(0, 50), generatedAt: now.toISOString() });
   } catch (err) {
     return res.status(502).json({ error: "Fetch failed", detail: String(err.message || err) });
