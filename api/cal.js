@@ -83,6 +83,12 @@ async function fetchSource({ url, label }, now, horizon) {
   try {
     const data = await ical.async.fromURL(url);
     const events = [];
+    // Cutoff for "is this event still relevant?" — start of TODAY in UTC, not
+    // "now". Lets today's already-ended events keep showing on the dashboard
+    // (rendered dimmed via .cal-block.past) so the user can glance at "what
+    // happened today" all the way until midnight. Yesterday's events drop off.
+    const startOfToday = new Date(now.getTime());
+    startOfToday.setUTCHours(0, 0, 0, 0);
 
     for (const k of Object.keys(data)) {
       const ev = data[k];
@@ -90,26 +96,22 @@ async function fetchSource({ url, label }, now, horizon) {
 
       if (ev.rrule) {
         // Look back to start of UTC day so we catch in-progress recurring events
-        // (e.g. a 9-hour Mon 8:30 → 18:30 instance still running at noon). Then
-        // we filter occurrences whose end is in the past — symmetric with the
-        // non-recurring branch below. Bug fix 2026-04-27.
-        const lookback = new Date(now.getTime());
-        lookback.setUTCHours(0, 0, 0, 0);
-        const occurrences = ev.rrule.between(lookback, horizon, true);
+        // (e.g. a 9-hour Mon 8:30 → 18:30 instance still running at noon).
+        const occurrences = ev.rrule.between(startOfToday, horizon, true);
         const durationMs = (ev.end?.getTime?.() || ev.start.getTime()) - ev.start.getTime();
         for (const occ of occurrences) {
           const exKey = occ.toISOString().slice(0, 10);
           if (ev.exdate && Object.values(ev.exdate).some(d => d.toISOString().slice(0, 10) === exKey)) continue;
           const start = new Date(occ);
           const end = new Date(occ.getTime() + durationMs);
-          if (end < now) continue;  // already ended → drop, matches non-recurring filter
+          if (end < startOfToday) continue;
           events.push(toJson(ev, start, end, label));
         }
       } else {
         if (!ev.start) continue;
         const start = new Date(ev.start);
         const end = ev.end ? new Date(ev.end) : start;
-        if (end < now || start > horizon) continue;
+        if (end < startOfToday || start > horizon) continue;
         events.push(toJson(ev, start, end, label));
       }
     }
