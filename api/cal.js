@@ -89,13 +89,20 @@ async function fetchSource({ url, label }, now, horizon) {
       if (ev.type !== "VEVENT") continue;
 
       if (ev.rrule) {
-        const occurrences = ev.rrule.between(now, horizon, true);
+        // Look back to start of UTC day so we catch in-progress recurring events
+        // (e.g. a 9-hour Mon 8:30 → 18:30 instance still running at noon). Then
+        // we filter occurrences whose end is in the past — symmetric with the
+        // non-recurring branch below. Bug fix 2026-04-27.
+        const lookback = new Date(now.getTime());
+        lookback.setUTCHours(0, 0, 0, 0);
+        const occurrences = ev.rrule.between(lookback, horizon, true);
         const durationMs = (ev.end?.getTime?.() || ev.start.getTime()) - ev.start.getTime();
         for (const occ of occurrences) {
           const exKey = occ.toISOString().slice(0, 10);
           if (ev.exdate && Object.values(ev.exdate).some(d => d.toISOString().slice(0, 10) === exKey)) continue;
           const start = new Date(occ);
           const end = new Date(occ.getTime() + durationMs);
+          if (end < now) continue;  // already ended → drop, matches non-recurring filter
           events.push(toJson(ev, start, end, label));
         }
       } else {
