@@ -75,8 +75,9 @@ async function getAccessToken() {
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin",  ALLOW_ORIGIN);
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  // Short cache: 25 s so the dashboard's 30 s poll always gets fresh data.
-  res.setHeader("Cache-Control", "public, s-maxage=25, stale-while-revalidate=30");
+  // Short cache: 8 s so the dashboard's 10 s poll always gets fresh data.
+  // (Spotify rate-limits ~180 req/min; we're well under at ~7-8/min.)
+  res.setHeader("Cache-Control", "public, s-maxage=8, stale-while-revalidate=15");
 
   if (req.method === "OPTIONS") return res.status(204).end();
 
