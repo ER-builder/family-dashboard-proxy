@@ -33,7 +33,6 @@ const ALLOW_ORIGIN = process.env.ALLOW_ORIGIN || "*";
 // serverless instance (Vercel keeps functions warm for ~5 min).
 let _cachedToken = null;
 let _tokenExpiresAt = 0;
-let _cachedScope = "";
 
 async function getAccessToken() {
   const now = Date.now();
@@ -71,7 +70,6 @@ async function getAccessToken() {
 
   const data = await res.json();
   _cachedToken    = data.access_token;
-  _cachedScope    = data.scope || "";
   // expires_in is in seconds; default to 3600 if missing.
   _tokenExpiresAt = now + (data.expires_in ?? 3600) * 1000;
   return _cachedToken;
@@ -79,22 +77,16 @@ async function getAccessToken() {
 
 // Fetch the most-recently-played track. Returns null on any failure (missing
 // scope, network error, empty history) so the dashboard's idle state still
-// renders cleanly. When `debugInfo` is provided, populates it with diagnostic
-// fields so callers can introspect why null came back.
-async function fetchLastPlayed(token, debugInfo) {
+// renders cleanly.
+async function fetchLastPlayed(token) {
   try {
     const r = await fetch(
       "https://api.spotify.com/v1/me/player/recently-played?limit=1",
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    if (debugInfo) debugInfo.recentlyPlayedStatus = r.status;
-    if (!r.ok) {
-      if (debugInfo) debugInfo.recentlyPlayedBody = (await r.text()).slice(0, 400);
-      return null;
-    }
+    if (!r.ok) return null;
     const data = await r.json();
     const item = data?.items?.[0]?.track;
-    if (debugInfo) debugInfo.recentlyPlayedHasItem = !!item;
     if (!item) return null;
     const images = item.album?.images ?? [];
     return {
@@ -104,8 +96,7 @@ async function fetchLastPlayed(token, debugInfo) {
       albumArt:   (images[1] ?? images[0])?.url ?? null,
       spotifyUrl: item.external_urls?.spotify ?? null,
     };
-  } catch (e) {
-    if (debugInfo) debugInfo.recentlyPlayedError = String(e?.message ?? e);
+  } catch {
     return null;
   }
 }
@@ -118,33 +109,6 @@ export default async function handler(req, res) {
   res.setHeader("Cache-Control", "public, s-maxage=8, stale-while-revalidate=15");
 
   if (req.method === "OPTIONS") return res.status(204).end();
-
-  // ?debug=1 returns granted scopes + recently-played call status. Safe to
-  // expose: scope strings are not secrets and we never echo the token.
-  const debug = req.query?.debug === "1" || /[?&]debug=1\b/.test(req.url || "");
-
-  if (debug) {
-    // Run debug separately so even a failed token refresh still surfaces
-    // env-var diagnostics (length, public client_id) for troubleshooting.
-    const out = {
-      clientId: process.env.SPOTIFY_CLIENT_ID || null,  // public, not a secret
-      clientSecretLen: (process.env.SPOTIFY_CLIENT_SECRET || "").length,
-      refreshTokenLen: (process.env.SPOTIFY_REFRESH_TOKEN || "").length,
-    };
-    try {
-      const token = await getAccessToken();
-      out.tokenRefresh = "ok";
-      out.scope = _cachedScope;
-      out.scopeIncludesRecentlyPlayed = _cachedScope.split(/\s+/).includes("user-read-recently-played");
-      const info = {};
-      out.lastPlayed = await fetchLastPlayed(token, info);
-      out.recentlyPlayed = info;
-    } catch (e) {
-      out.tokenRefresh = "failed";
-      out.tokenRefreshError = String(e?.message ?? e).slice(0, 400);
-    }
-    return res.status(200).json(out);
-  }
 
   try {
     const token = await getAccessToken();
