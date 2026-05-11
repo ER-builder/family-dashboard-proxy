@@ -123,22 +123,31 @@ export default async function handler(req, res) {
   // expose: scope strings are not secrets and we never echo the token.
   const debug = req.query?.debug === "1" || /[?&]debug=1\b/.test(req.url || "");
 
+  if (debug) {
+    // Run debug separately so even a failed token refresh still surfaces
+    // env-var diagnostics (length, public client_id) for troubleshooting.
+    const out = {
+      clientId: process.env.SPOTIFY_CLIENT_ID || null,  // public, not a secret
+      clientSecretLen: (process.env.SPOTIFY_CLIENT_SECRET || "").length,
+      refreshTokenLen: (process.env.SPOTIFY_REFRESH_TOKEN || "").length,
+    };
+    try {
+      const token = await getAccessToken();
+      out.tokenRefresh = "ok";
+      out.scope = _cachedScope;
+      out.scopeIncludesRecentlyPlayed = _cachedScope.split(/\s+/).includes("user-read-recently-played");
+      const info = {};
+      out.lastPlayed = await fetchLastPlayed(token, info);
+      out.recentlyPlayed = info;
+    } catch (e) {
+      out.tokenRefresh = "failed";
+      out.tokenRefreshError = String(e?.message ?? e).slice(0, 400);
+    }
+    return res.status(200).json(out);
+  }
+
   try {
     const token = await getAccessToken();
-
-    if (debug) {
-      const info = {};
-      const lp = await fetchLastPlayed(token, info);
-      return res.status(200).json({
-        clientId: process.env.SPOTIFY_CLIENT_ID || null,  // public, not a secret
-        clientSecretLen: (process.env.SPOTIFY_CLIENT_SECRET || "").length,
-        refreshTokenLen: (process.env.SPOTIFY_REFRESH_TOKEN || "").length,
-        scope: _cachedScope,
-        scopeIncludesRecentlyPlayed: _cachedScope.split(/\s+/).includes("user-read-recently-played"),
-        recentlyPlayed: info,
-        lastPlayed: lp,
-      });
-    }
 
     const spotifyRes = await fetch(
       "https://api.spotify.com/v1/me/player/currently-playing",
