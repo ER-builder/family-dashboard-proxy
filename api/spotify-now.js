@@ -5,7 +5,7 @@
  * token is stored in the SPOTIFY_REFRESH_TOKEN environment variable.
  *
  * Response (200):
- *   { isPlaying: false }
+ *   { isPlaying: false, lastPlayed: { track, artist, album, albumArt, spotifyUrl } | null }
  *   — or —
  *   {
  *     isPlaying: true,
@@ -17,6 +17,9 @@
  *     duration:  210000,  // total track duration ms
  *     spotifyUrl: "https://open.spotify.com/track/..."
  *   }
+ *
+ * lastPlayed requires the `user-read-recently-played` scope on the refresh
+ * token. If the scope is missing the field is `null` and we degrade silently.
  *
  * Required Vercel env vars:
  *   SPOTIFY_CLIENT_ID
@@ -72,6 +75,32 @@ async function getAccessToken() {
   return _cachedToken;
 }
 
+// Fetch the most-recently-played track. Returns null on any failure (missing
+// scope, network error, empty history) so the dashboard's idle state still
+// renders cleanly.
+async function fetchLastPlayed(token) {
+  try {
+    const r = await fetch(
+      "https://api.spotify.com/v1/me/player/recently-played?limit=1",
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!r.ok) return null;
+    const data = await r.json();
+    const item = data?.items?.[0]?.track;
+    if (!item) return null;
+    const images = item.album?.images ?? [];
+    return {
+      track:      item.name ?? "",
+      artist:     (item.artists ?? []).map(a => a.name).join(", "),
+      album:      item.album?.name ?? "",
+      albumArt:   (images[1] ?? images[0])?.url ?? null,
+      spotifyUrl: item.external_urls?.spotify ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin",  ALLOW_ORIGIN);
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -93,7 +122,8 @@ export default async function handler(req, res) {
 
     // 204 = nothing playing / no active device
     if (spotifyRes.status === 204 || spotifyRes.status === 202) {
-      return res.status(200).json({ isPlaying: false });
+      const lastPlayed = await fetchLastPlayed(token);
+      return res.status(200).json({ isPlaying: false, lastPlayed });
     }
 
     if (!spotifyRes.ok) {
@@ -104,7 +134,8 @@ export default async function handler(req, res) {
 
     // Guard: item can be null if a private session is active.
     if (!data || !data.item) {
-      return res.status(200).json({ isPlaying: false });
+      const lastPlayed = await fetchLastPlayed(token);
+      return res.status(200).json({ isPlaying: false, lastPlayed });
     }
 
     const item = data.item;
