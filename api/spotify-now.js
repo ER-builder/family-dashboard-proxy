@@ -33,6 +33,7 @@ const ALLOW_ORIGIN = process.env.ALLOW_ORIGIN || "*";
 // serverless instance (Vercel keeps functions warm for ~5 min).
 let _cachedToken = null;
 let _tokenExpiresAt = 0;
+let _cachedScope = "";
 
 async function getAccessToken() {
   const now = Date.now();
@@ -70,6 +71,7 @@ async function getAccessToken() {
 
   const data = await res.json();
   _cachedToken    = data.access_token;
+  _cachedScope    = data.scope || "";
   // expires_in is in seconds; default to 3600 if missing.
   _tokenExpiresAt = now + (data.expires_in ?? 3600) * 1000;
   return _cachedToken;
@@ -77,16 +79,22 @@ async function getAccessToken() {
 
 // Fetch the most-recently-played track. Returns null on any failure (missing
 // scope, network error, empty history) so the dashboard's idle state still
-// renders cleanly.
-async function fetchLastPlayed(token) {
+// renders cleanly. When `debugInfo` is provided, populates it with diagnostic
+// fields so callers can introspect why null came back.
+async function fetchLastPlayed(token, debugInfo) {
   try {
     const r = await fetch(
       "https://api.spotify.com/v1/me/player/recently-played?limit=1",
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    if (!r.ok) return null;
+    if (debugInfo) debugInfo.recentlyPlayedStatus = r.status;
+    if (!r.ok) {
+      if (debugInfo) debugInfo.recentlyPlayedBody = (await r.text()).slice(0, 400);
+      return null;
+    }
     const data = await r.json();
     const item = data?.items?.[0]?.track;
+    if (debugInfo) debugInfo.recentlyPlayedHasItem = !!item;
     if (!item) return null;
     const images = item.album?.images ?? [];
     return {
@@ -96,7 +104,8 @@ async function fetchLastPlayed(token) {
       albumArt:   (images[1] ?? images[0])?.url ?? null,
       spotifyUrl: item.external_urls?.spotify ?? null,
     };
-  } catch {
+  } catch (e) {
+    if (debugInfo) debugInfo.recentlyPlayedError = String(e?.message ?? e);
     return null;
   }
 }
@@ -110,8 +119,23 @@ export default async function handler(req, res) {
 
   if (req.method === "OPTIONS") return res.status(204).end();
 
+  // ?debug=1 returns granted scopes + recently-played call status. Safe to
+  // expose: scope strings are not secrets and we never echo the token.
+  const debug = req.query?.debug === "1" || /[?&]debug=1\b/.test(req.url || "");
+
   try {
     const token = await getAccessToken();
+
+    if (debug) {
+      const info = {};
+      const lp = await fetchLastPlayed(token, info);
+      return res.status(200).json({
+        scope: _cachedScope,
+        scopeIncludesRecentlyPlayed: _cachedScope.split(/\s+/).includes("user-read-recently-played"),
+        recentlyPlayed: info,
+        lastPlayed: lp,
+      });
+    }
 
     const spotifyRes = await fetch(
       "https://api.spotify.com/v1/me/player/currently-playing",
