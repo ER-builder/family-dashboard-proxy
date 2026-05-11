@@ -130,6 +130,9 @@ export default async function handler(req, res) {
       const info = {};
       const lp = await fetchLastPlayed(token, info);
       return res.status(200).json({
+        clientId: process.env.SPOTIFY_CLIENT_ID || null,  // public, not a secret
+        clientSecretLen: (process.env.SPOTIFY_CLIENT_SECRET || "").length,
+        refreshTokenLen: (process.env.SPOTIFY_REFRESH_TOKEN || "").length,
         scope: _cachedScope,
         scopeIncludesRecentlyPlayed: _cachedScope.split(/\s+/).includes("user-read-recently-played"),
         recentlyPlayed: info,
