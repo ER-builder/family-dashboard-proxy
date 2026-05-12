@@ -101,12 +101,19 @@ async function fetchLastPlayed(token) {
   }
 }
 
+// Adaptive edge cache: 15 s while music is actively playing (need responsiveness
+// for track-skip / progress UI); 60 s when idle (state rarely changes). Combined
+// with a 15 s client poll this keeps Spotify API calls under ~5/min and gives a
+// 70-90% Vercel edge HIT rate.
+function sendPlayback(res, payload) {
+  const ttl = payload.isPlaying ? 15 : 60;
+  res.setHeader("Cache-Control", `public, s-maxage=${ttl}, stale-while-revalidate=${ttl * 2}`);
+  return res.status(200).json(payload);
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin",  ALLOW_ORIGIN);
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  // Short cache: 8 s so the dashboard's 10 s poll always gets fresh data.
-  // (Spotify rate-limits ~180 req/min; we're well under at ~7-8/min.)
-  res.setHeader("Cache-Control", "public, s-maxage=8, stale-while-revalidate=15");
 
   if (req.method === "OPTIONS") return res.status(204).end();
 
@@ -123,7 +130,7 @@ export default async function handler(req, res) {
     // 204 = nothing playing / no active device
     if (spotifyRes.status === 204 || spotifyRes.status === 202) {
       const lastPlayed = await fetchLastPlayed(token);
-      return res.status(200).json({ isPlaying: false, lastPlayed });
+      return sendPlayback(res, { isPlaying: false, lastPlayed });
     }
 
     if (!spotifyRes.ok) {
@@ -135,7 +142,7 @@ export default async function handler(req, res) {
     // Guard: item can be null if a private session is active.
     if (!data || !data.item) {
       const lastPlayed = await fetchLastPlayed(token);
-      return res.status(200).json({ isPlaying: false, lastPlayed });
+      return sendPlayback(res, { isPlaying: false, lastPlayed });
     }
 
     const item = data.item;
@@ -146,7 +153,7 @@ export default async function handler(req, res) {
     const images = item.album?.images ?? [];
     const albumArt = (images[1] ?? images[0])?.url ?? null;
 
-    return res.status(200).json({
+    return sendPlayback(res, {
       isPlaying,
       track:      item.name ?? "",
       artist:     (item.artists ?? []).map(a => a.name).join(", "),
@@ -159,8 +166,9 @@ export default async function handler(req, res) {
 
   } catch (err) {
     // Surface the error in the response so you can debug from the dashboard
-    // console without needing to check Vercel logs.
+    // console without needing to check Vercel logs. Don't cache failures.
     console.error("[spotify-now]", err);
+    res.setHeader("Cache-Control", "no-store");
     return res.status(500).json({ error: String(err.message ?? err) });
   }
 }

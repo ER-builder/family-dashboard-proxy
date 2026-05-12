@@ -31,7 +31,7 @@ GET /api/cal?debug=1
 - Recurring events are expanded (RRULE) within the window.
 - Events are deduped across sources by `uid|start` (so the same event imported
   into multiple calendars only appears once).
-- Cached at Vercel edge for 5 min (`s-maxage=300`, `stale-while-revalidate=600`).
+- Cached at Vercel edge for 30 min (`s-maxage=1800`, `stale-while-revalidate=3600`). Family iCal feeds change a few times per week, not per minute — tight cache pre-2026-05-12 was burning Vercel CPU for no perceptible freshness gain.
 - If a source fetch fails, others still succeed; full failure returns 502.
 
 ## Updating the source list

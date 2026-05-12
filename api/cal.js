@@ -7,7 +7,7 @@ const MAX_EVENTS = 50;
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", ALLOW_ORIGIN);
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Cache-Control", "public, s-maxage=300, stale-while-revalidate=600");
+  res.setHeader("Cache-Control", "public, s-maxage=1800, stale-while-revalidate=3600");
   if (req.method === "OPTIONS") return res.status(204).end();
 
   const sources = resolveSources();
