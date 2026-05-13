@@ -101,12 +101,12 @@ async function fetchLastPlayed(token) {
   }
 }
 
-// Adaptive edge cache: 15 s while music is actively playing (need responsiveness
-// for track-skip / progress UI); 60 s when idle (state rarely changes). Combined
-// with a 15 s client poll this keeps Spotify API calls under ~5/min and gives a
-// 70-90% Vercel edge HIT rate.
+// Adaptive edge cache: 15 s while music is actively playing (track-skip / progress UI);
+// 20 s when idle. Idle was 60 s but that meant the dashboard took up to ~75 s
+// (60 s cache + 15 s poll) to notice "music started" — felt broken. 20 s caps
+// the lag at ~35 s while still cutting Spotify API calls ~70% vs the original 8 s.
 function sendPlayback(res, payload) {
-  const ttl = payload.isPlaying ? 15 : 60;
+  const ttl = payload.isPlaying ? 15 : 20;
   res.setHeader("Cache-Control", `public, s-maxage=${ttl}, stale-while-revalidate=${ttl * 2}`);
   return res.status(200).json(payload);
 }
