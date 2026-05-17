@@ -27,10 +27,21 @@
  *   SPOTIFY_REFRESH_TOKEN
  */
 
+// 2026-05-17: migrated to Edge runtime. V8 isolate startup is ~10ms vs ~150ms
+// for Node serverless; per-invocation CPU drops ~5×. Combined with the cache
+// TTL bump below + 60s dashboard polling, this is part of the -80% Vercel
+// Fluid CPU pass after the proxy hit 68% of all account CPU.
+//
+// Edge runtime quirks vs Node:
+//   - No Buffer; use btoa() for base64 (basic-auth header)
+//   - No process.env import-time evaluation issues (still works fine)
+//   - fetch is global; URLSearchParams is global; both fine
+export const config = { runtime: "edge" };
+
 const ALLOW_ORIGIN = process.env.ALLOW_ORIGIN || "*";
 
 // Module-level token cache — survives across warm invocations on the same
-// serverless instance (Vercel keeps functions warm for ~5 min).
+// isolate. Edge isolates stay warm longer than Node functions.
 let _cachedToken = null;
 let _tokenExpiresAt = 0;
 
@@ -54,11 +65,13 @@ async function getAccessToken() {
     refresh_token: refreshToken,
   });
 
+  // Edge runtime: btoa() instead of Buffer (no Buffer global in V8 isolate).
+  const basicAuth = btoa(`${clientId}:${clientSecret}`);
   const res = await fetch("https://accounts.spotify.com/api/token", {
     method:  "POST",
     headers: {
       "Content-Type":  "application/x-www-form-urlencoded",
-      "Authorization": "Basic " + Buffer.from(`${clientId}:${clientSecret}`).toString("base64"),
+      "Authorization": "Basic " + basicAuth,
     },
     body: body.toString(),
   });
@@ -101,36 +114,49 @@ async function fetchLastPlayed(token) {
   }
 }
 
-// Adaptive edge cache: 15 s while music is actively playing (track-skip / progress UI);
-// 20 s when idle. Idle was 60 s but that meant the dashboard took up to ~75 s
-// (60 s cache + 15 s poll) to notice "music started" — felt broken. 20 s caps
-// the lag at ~35 s while still cutting Spotify API calls ~70% vs the original 8 s.
-function sendPlayback(res, payload) {
-  const ttl = payload.isPlaying ? 15 : 20;
-  res.setHeader("Cache-Control", `public, s-maxage=${ttl}, stale-while-revalidate=${ttl * 2}`);
-  return res.status(200).json(payload);
+// Adaptive edge cache (2026-05-17 bump): 120s playing / 600s idle.
+// Was 15s/20s — but paired with the 2026-05-17 dashboard poll-cadence drop
+// (15s → 60s) AND the user-tap cache-bust (?t=<ms> in spCommand), the family
+// gets fresh data on every tap regardless of TTL. Background polls just feed
+// the UI; cache lag there is invisible. This change alone roughly halves
+// Spotify origin hits during playback and cuts idle hits ~8×.
+function sendPlayback(payload, isPlaying) {
+  const ttl = isPlaying ? 120 : 600;
+  return new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: {
+      "Content-Type":  "application/json",
+      "Access-Control-Allow-Origin":  ALLOW_ORIGIN,
+      "Access-Control-Allow-Methods": "GET, OPTIONS",
+      "Cache-Control": `public, s-maxage=${ttl}, stale-while-revalidate=${ttl * 2}`,
+    },
+  });
 }
 
-export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin",  ALLOW_ORIGIN);
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-
-  if (req.method === "OPTIONS") return res.status(204).end();
+// Edge runtime: single (req) → Response signature. No res object.
+export default async function handler(req) {
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin":  ALLOW_ORIGIN,
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+      },
+    });
+  }
 
   try {
     const token = await getAccessToken();
 
     const spotifyRes = await fetch(
       "https://api.spotify.com/v1/me/player/currently-playing",
-      {
-        headers: { Authorization: `Bearer ${token}` },
-      }
+      { headers: { Authorization: `Bearer ${token}` } }
     );
 
     // 204 = nothing playing / no active device
     if (spotifyRes.status === 204 || spotifyRes.status === 202) {
       const lastPlayed = await fetchLastPlayed(token);
-      return sendPlayback(res, { isPlaying: false, lastPlayed });
+      return sendPlayback({ isPlaying: false, lastPlayed }, false);
     }
 
     if (!spotifyRes.ok) {
@@ -139,21 +165,17 @@ export default async function handler(req, res) {
 
     const data = await spotifyRes.json();
 
-    // Guard: item can be null if a private session is active.
     if (!data || !data.item) {
       const lastPlayed = await fetchLastPlayed(token);
-      return sendPlayback(res, { isPlaying: false, lastPlayed });
+      return sendPlayback({ isPlaying: false, lastPlayed }, false);
     }
 
     const item = data.item;
     const isPlaying = data.is_playing === true;
-
-    // Pick the 300×300 album art (index 1 in the images array, which Spotify
-    // always provides at that size; fall back to index 0 if only one size).
     const images = item.album?.images ?? [];
     const albumArt = (images[1] ?? images[0])?.url ?? null;
 
-    return sendPlayback(res, {
+    return sendPlayback({
       isPlaying,
       track:      item.name ?? "",
       artist:     (item.artists ?? []).map(a => a.name).join(", "),
@@ -162,13 +184,17 @@ export default async function handler(req, res) {
       progress:   data.progress_ms  ?? 0,
       duration:   item.duration_ms  ?? 0,
       spotifyUrl: item.external_urls?.spotify ?? null,
-    });
+    }, isPlaying);
 
   } catch (err) {
-    // Surface the error in the response so you can debug from the dashboard
-    // console without needing to check Vercel logs. Don't cache failures.
     console.error("[spotify-now]", err);
-    res.setHeader("Cache-Control", "no-store");
-    return res.status(500).json({ error: String(err.message ?? err) });
+    return new Response(JSON.stringify({ error: String(err.message ?? err) }), {
+      status: 500,
+      headers: {
+        "Content-Type":  "application/json",
+        "Access-Control-Allow-Origin": ALLOW_ORIGIN,
+        "Cache-Control": "no-store",
+      },
+    });
   }
 }

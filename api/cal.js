@@ -7,7 +7,12 @@ const MAX_EVENTS = 50;
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", ALLOW_ORIGIN);
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Cache-Control", "public, s-maxage=1800, stale-while-revalidate=3600");
+  // 2026-05-17: cache 30min → 60min. Paired with dashboard polling drop
+  // (5min → 30min). node-ical parse + rrule expansion is ~1.5s of CPU per
+  // origin hit; halving that hit rate is high-leverage. Calendar events
+  // rarely change minute-to-minute — 60min lag for "new event added on
+  // someone's phone" is acceptable on a kitchen dashboard.
+  res.setHeader("Cache-Control", "public, s-maxage=3600, stale-while-revalidate=7200");
   if (req.method === "OPTIONS") return res.status(204).end();
 
   const sources = resolveSources();
