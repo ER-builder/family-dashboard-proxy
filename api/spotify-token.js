@@ -13,6 +13,7 @@ const REDIRECT_URI = "https://family-dashboard-proxy.vercel.app/api/spotify-call
 const SDK_SCOPES = [
   "streaming",
   "user-read-email",
+  "user-read-private",            // 2026-05-18: SDK throws "Invalid token scopes" without this
   "user-read-playback-state",
   "user-modify-playback-state",
   "user-read-currently-playing",
